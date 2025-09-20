@@ -446,6 +446,110 @@ mod tests {
     }
 
     #[test]
+    fn test_r_m_disp_8() {
+        assert_insts_eq(
+            indoc! {"
+                mov ax, [bx + si + 8]
+                mov bx, [bx + di + 12]
+                mov cx, [bp + si + 4]
+                mov dx, [bp + di + 7]
+                mov ah, [si + 3]
+                mov al, [di + 1]
+                mov bl, [bp + 9]
+                mov bh, [bx + 5]
+            "},
+            &[
+                Inst::mov(Reg::AX, Mem::RRD(Reg::BX, Reg::SI, 8)),
+                Inst::mov(Reg::BX, Mem::RRD(Reg::BX, Reg::DI, 12)),
+                Inst::mov(Reg::CX, Mem::RRD(Reg::BP, Reg::SI, 4)),
+                Inst::mov(Reg::DX, Mem::RRD(Reg::BP, Reg::DI, 7)),
+                Inst::mov(Reg::AH, Mem::RD(Reg::SI, 3)),
+                Inst::mov(Reg::AL, Mem::RD(Reg::DI, 1)),
+                Inst::mov(Reg::BL, Mem::RD(Reg::BP, 9)),
+                Inst::mov(Reg::BH, Mem::RD(Reg::BX, 5)),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_m_r_disp_8() {
+        assert_insts_eq(
+            indoc! {"
+                mov [bx + si + 8], ax
+                mov [bx + di + 12], bx
+                mov [bp + si + 4], cx
+                mov [bp + di + 7], dx
+                mov [si + 3], ah
+                mov [di + 1], al
+                mov [bp + 9], bl
+                mov [bx + 5], bh
+            "},
+            &[
+                Inst::mov(Mem::RRD(Reg::BX, Reg::SI, 8), Reg::AX),
+                Inst::mov(Mem::RRD(Reg::BX, Reg::DI, 12), Reg::BX),
+                Inst::mov(Mem::RRD(Reg::BP, Reg::SI, 4), Reg::CX),
+                Inst::mov(Mem::RRD(Reg::BP, Reg::DI, 7), Reg::DX),
+                Inst::mov(Mem::RD(Reg::SI, 3), Reg::AH),
+                Inst::mov(Mem::RD(Reg::DI, 1), Reg::AL),
+                Inst::mov(Mem::RD(Reg::BP, 9), Reg::BL),
+                Inst::mov(Mem::RD(Reg::BX, 5), Reg::BH),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_r_m_disp_16() {
+        assert_insts_eq(
+            indoc! {"
+                mov ax, [bx + si + 1000]
+                mov bx, [bx + di + 2000]
+                mov cx, [bp + si + 3000]
+                mov dx, [bp + di + 4000]
+                mov sp, [si + 5000]
+                mov bp, [di + 6000]
+                mov si, [bp + 7000]
+                mov di, [bx + 8000]
+            "},
+            &[
+                Inst::mov(Reg::AX, Mem::RRD(Reg::BX, Reg::SI, 1000)),
+                Inst::mov(Reg::BX, Mem::RRD(Reg::BX, Reg::DI, 2000)),
+                Inst::mov(Reg::CX, Mem::RRD(Reg::BP, Reg::SI, 3000)),
+                Inst::mov(Reg::DX, Mem::RRD(Reg::BP, Reg::DI, 4000)),
+                Inst::mov(Reg::SP, Mem::RD(Reg::SI, 5000)),
+                Inst::mov(Reg::BP, Mem::RD(Reg::DI, 6000)),
+                Inst::mov(Reg::SI, Mem::RD(Reg::BP, 7000)),
+                Inst::mov(Reg::DI, Mem::RD(Reg::BX, 8000)),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_m_r_disp_16() {
+        assert_insts_eq(
+            indoc! {"
+                mov [bx + si + 1000], ax
+                mov [bx + di + 2000], bx
+                mov [bp + si + 3000], cx
+                mov [bp + di + 4000], dx
+                mov [si + 5000], sp
+                mov [di + 6000], bp
+                mov [bp + 7000], si
+                mov [bx + 8000], di
+            "},
+            &[
+                Inst::mov(Mem::RRD(Reg::BX, Reg::SI, 1000), Reg::AX),
+                Inst::mov(Mem::RRD(Reg::BX, Reg::DI, 2000), Reg::BX),
+                Inst::mov(Mem::RRD(Reg::BP, Reg::SI, 3000), Reg::CX),
+                Inst::mov(Mem::RRD(Reg::BP, Reg::DI, 4000), Reg::DX),
+                Inst::mov(Mem::RD(Reg::SI, 5000), Reg::SP),
+                Inst::mov(Mem::RD(Reg::DI, 6000), Reg::BP),
+                Inst::mov(Mem::RD(Reg::BP, 7000), Reg::SI),
+                Inst::mov(Mem::RD(Reg::BX, 8000), Reg::DI),
+            ],
+        );
+    }
+
+    #[test]
     fn test_0037() {
         assert_roundtrip("mov cx, bx");
     }
