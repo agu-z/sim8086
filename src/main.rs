@@ -85,31 +85,14 @@ impl Inst {
         let reg = (mod_reg_rm & 0b111000) >> 3;
 
         match mod_ {
-            0b11 => {
-                let mut dst = Reg::from_w_reg(w, reg)?;
-                let mut src = Reg::from_w_reg(w, rm)?;
-                if d == 0 {
-                    mem::swap(&mut dst, &mut src);
-                }
-
-                Ok(Self::Mov {
-                    dst: Dst::Reg(dst),
-                    src: Src::Reg(src),
-                })
-            }
             0b00 => {
                 let mut dst = Dst::Reg(Reg::from_w_reg(w, reg)?);
-                let mut mem: Mem = if rm == 0b100 {
+                let mem: Mem = if rm == 0b100 {
                     Mem::R(Reg::SI)
                 } else if rm == 0b101 {
                     Mem::R(Reg::DI)
                 } else if rm == 0b110 {
-                    if w == 1 {
-                        Addr(content.try_get_u16_le()?)
-                    } else {
-                        Addr(content.try_get_u8()? as u16)
-                    }
-                    .into()
+                    Mem::Addr(Addr(content.try_get_u16_le()?))
                 } else if rm == 0b111 {
                     Mem::R(Reg::BX)
                 } else {
@@ -129,7 +112,51 @@ impl Inst {
 
                 Ok(Self::Mov { dst, src })
             }
-            // 0b01 => {}
+            0b01 | 0b10 => {
+                let disp = if mod_ == 0b01 {
+                    content.try_get_u8()? as u16
+                } else {
+                    content.try_get_u16_le()?
+                };
+
+                let mut dst = Dst::Reg(Reg::from_w_reg(w, reg)?);
+                let mem: Mem = if rm == 0b100 {
+                    Mem::RD(Reg::SI, disp)
+                } else if rm == 0b101 {
+                    Mem::RD(Reg::DI, disp)
+                } else if rm == 0b110 {
+                    Mem::RD(Reg::BP, disp)
+                } else if rm == 0b111 {
+                    Mem::RD(Reg::BX, disp)
+                } else {
+                    let lhs = if rm >> 1 == 0 { Reg::BX } else { Reg::BP };
+                    let rhs = if rm & 1 == 0 { Reg::SI } else { Reg::DI };
+
+                    Mem::RRD(lhs, rhs, disp)
+                };
+
+                let src = if d == 0 {
+                    let old_dst = dst;
+                    dst = Dst::Mem(mem);
+                    old_dst.into()
+                } else {
+                    Src::Mem(mem)
+                };
+
+                Ok(Self::Mov { dst, src })
+            }
+            0b11 => {
+                let mut dst = Reg::from_w_reg(w, reg)?;
+                let mut src = Reg::from_w_reg(w, rm)?;
+                if d == 0 {
+                    mem::swap(&mut dst, &mut src);
+                }
+
+                Ok(Self::Mov {
+                    dst: Dst::Reg(dst),
+                    src: Src::Reg(src),
+                })
+            }
             _ => anyhow::bail!("TODO mod: {mod_:b}"),
         }
     }
