@@ -20,7 +20,7 @@ fn main() {
 }
 
 struct Program {
-    instructions: Vec<Instruction>,
+    instructions: Vec<Inst>,
 }
 
 impl Program {
@@ -34,7 +34,7 @@ impl Program {
 
         let mut index = 0;
         while bin.has_remaining() {
-            match Instruction::read(&mut bin) {
+            match Inst::read(&mut bin) {
                 Ok(inst) => instructions.push(inst),
                 Err(err) => return Err(err.context(format!("@ {index}"))),
             }
@@ -58,11 +58,11 @@ impl Display for Program {
 }
 
 #[derive(Debug, PartialEq)]
-enum Instruction {
-    Mov { dst: Reg, src: Src },
+enum Inst {
+    Mov { dst: Dst, src: Src },
 }
 
-impl Instruction {
+impl Inst {
     fn read(content: &mut Bytes) -> Result<Self> {
         let op = content.try_get_u8()?;
 
@@ -80,26 +80,55 @@ impl Instruction {
         let w = op_dw & 1;
 
         let mod_reg_rm = content.try_get_u8()?;
-
-        let mod_ = (mod_reg_rm & 0b11000000) >> 6;
-
-        if mod_ != 0b11 {
-            anyhow::bail!("TODO mod: {mod_:b}");
-        }
-
-        let reg = (mod_reg_rm & 0b111000) >> 3;
+        let mod_ = mod_reg_rm >> 6;
         let rm = mod_reg_rm & 0b111;
+        let reg = (mod_reg_rm & 0b111000) >> 3;
 
-        let mut dst = Reg::from_w_reg(w, reg)?;
-        let mut src = Reg::from_w_reg(w, rm)?;
-        if d == 0 {
-            mem::swap(&mut dst, &mut src);
+        match mod_ {
+            0b11 => {
+                let mut dst = Reg::from_w_reg(w, reg)?;
+                let mut src = Reg::from_w_reg(w, rm)?;
+                if d == 0 {
+                    mem::swap(&mut dst, &mut src);
+                }
+
+                Ok(Self::Mov {
+                    dst: Dst::Reg(dst),
+                    src: Src::Reg(src),
+                })
+            }
+            0b00 => {
+                let mut dst = Dst::Reg(Reg::from_w_reg(w, reg)?);
+                let mut src: Src = if rm == 0b100 {
+                    Reg::SI.into()
+                } else if rm == 0b101 {
+                    Reg::DI.into()
+                } else if rm == 0b110 {
+                    if w == 1 {
+                        Addr(content.try_get_u16_le()?)
+                    } else {
+                        Addr(content.try_get_u8()? as u16)
+                    }
+                    .into()
+                } else if rm == 0b111 {
+                    Reg::BX.into()
+                } else {
+                    let lhs = if rm >> 1 == 0 { Reg::BX } else { Reg::BP };
+                    let rhs = if rm & 1 == 0 { Reg::SI } else { Reg::DI };
+
+                    Mem::Disp(lhs, rhs).into()
+                };
+
+                if d == 0 {
+                    let old_dst = dst;
+                    dst = src.try_into()?;
+                    src = old_dst.into();
+                }
+
+                Ok(Self::Mov { dst, src })
+            }
+            _ => anyhow::bail!("TODO mod: {mod_:b}"),
         }
-
-        Ok(Self::Mov {
-            dst,
-            src: Src::Reg(src),
-        })
     }
 
     fn read_mov_r_i(op_w_reg: u8, content: &mut Bytes) -> Result<Self> {
@@ -112,34 +141,74 @@ impl Instruction {
         };
 
         Ok(Self::Mov {
-            dst: Reg::from_w_reg(w, reg)?,
+            dst: Dst::Reg(Reg::from_w_reg(w, reg)?),
             src: Src::Imm(imm),
         })
     }
 
     // DSL
-    pub fn mov(dst: Reg, src: impl Into<Src>) -> Self {
+    pub fn mov(dst: impl Into<Dst>, src: impl Into<Src>) -> Self {
         Self::Mov {
-            dst: dst,
+            dst: dst.into(),
             src: src.into(),
         }
     }
 }
 
-impl Display for Instruction {
+impl Display for Inst {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Instruction::Mov { dst, src } => {
+            Inst::Mov { dst, src } => {
                 writeln!(f, "mov {dst}, {src}")
             }
         }
     }
 }
 
-#[derive(Debug, PartialEq)]
-enum Src {
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Dst {
     Reg(Reg),
+    Mem(Mem),
+}
+
+impl Display for Dst {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reg(reg) => write!(f, "{reg}"),
+            Self::Mem(mem) => write!(f, "{mem}"),
+        }
+    }
+}
+
+impl From<Reg> for Dst {
+    fn from(value: Reg) -> Self {
+        Self::Reg(value)
+    }
+}
+
+impl<T: Into<Mem>> From<T> for Dst {
+    fn from(value: T) -> Self {
+        Self::Mem(value.into())
+    }
+}
+
+impl TryFrom<Src> for Dst {
+    type Error = anyhow::Error;
+
+    fn try_from(value: Src) -> Result<Self, Self::Error> {
+        match value {
+            Src::Reg(reg) => Ok(Dst::Reg(reg)),
+            Src::Mem(mem) => Ok(Dst::Mem(mem)),
+            Src::Imm(_) => Err(anyhow!("Immediates are not a valid mov destination")),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Src {
     Imm(u16),
+    Reg(Reg),
+    Mem(Mem),
 }
 
 impl From<Reg> for Src {
@@ -154,18 +223,55 @@ impl From<u16> for Src {
     }
 }
 
+impl<T: Into<Mem>> From<T> for Src {
+    fn from(value: T) -> Self {
+        Self::Mem(value.into())
+    }
+}
+
+impl From<Dst> for Src {
+    fn from(value: Dst) -> Self {
+        match value {
+            Dst::Reg(reg) => Src::Reg(reg),
+            Dst::Mem(mem) => Src::Mem(mem),
+        }
+    }
+}
+
 impl Display for Src {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Src::Reg(reg) => write!(f, "{reg}"),
             Src::Imm(imm) => write!(f, "{imm}"),
+            Src::Mem(mem) => write!(f, "{mem}"),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Mem {
+    Addr(Addr),
+    Disp(Reg, Reg),
+}
+
+impl From<Addr> for Mem {
+    fn from(value: Addr) -> Self {
+        Mem::Addr(value)
+    }
+}
+
+impl Display for Mem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Addr(addr) => write!(f, "{addr}"),
+            Self::Disp(a, b) => write!(f, "[{a} + {b}]"),
         }
     }
 }
 
 #[repr(u8)]
 #[allow(dead_code)]
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 enum Reg {
     //     W REG
     AL = 0b0_000,
@@ -221,6 +327,15 @@ impl Display for Reg {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+struct Addr(u16);
+
+impl Display for Addr {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}]", self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use indoc::indoc;
@@ -238,18 +353,60 @@ mod tests {
         let program = Program::decode(original).unwrap();
 
         assert_eq!(program.instructions.len(), 2);
-        assert_eq!(program.instructions[0], Instruction::mov(Reg::AL, Reg::DL));
-        assert_eq!(program.instructions[1], Instruction::mov(Reg::CX, Reg::BX));
+        assert_eq!(program.instructions[0], Inst::mov(Reg::AL, Reg::DL));
+        assert_eq!(program.instructions[1], Inst::mov(Reg::CX, Reg::BX));
     }
 
     #[test]
     fn test_r_r() {
-        assert_inst_eq("mov cx, bx", Instruction::mov(Reg::CX, Reg::BX));
+        assert_inst_eq("mov cx, bx", Inst::mov(Reg::CX, Reg::BX));
     }
 
     #[test]
     fn test_r_i() {
-        assert_inst_eq("mov ax, 12", Instruction::mov(Reg::AX, 12));
+        assert_inst_eq("mov ax, 12", Inst::mov(Reg::AX, 12));
+    }
+
+    #[test]
+    fn test_r_m_no_disp() {
+        assert_insts_eq(
+            indoc! {"
+                mov cx, [bx+si]
+                mov cx, [bx+di]
+                mov cx, [bp+si]
+                mov cx, [bp+di]
+                mov cx, si
+                mov cx, di
+                mov cx, [75]
+                mov cx, bx
+                mov [bx+si], cx
+                mov [bx+di], cx
+                mov [bp+si], cx
+                mov [bp+di], cx
+                mov si, cx
+                mov di, cx
+                mov [75], cx
+                mov bx, cx
+            "},
+            &[
+                Inst::mov(Reg::CX, Mem::Disp(Reg::BX, Reg::SI)),
+                Inst::mov(Reg::CX, Mem::Disp(Reg::BX, Reg::DI)),
+                Inst::mov(Reg::CX, Mem::Disp(Reg::BP, Reg::SI)),
+                Inst::mov(Reg::CX, Mem::Disp(Reg::BP, Reg::DI)),
+                Inst::mov(Reg::CX, Reg::SI),
+                Inst::mov(Reg::CX, Reg::DI),
+                Inst::mov(Reg::CX, Addr(75)),
+                Inst::mov(Reg::CX, Reg::BX),
+                Inst::mov(Mem::Disp(Reg::BX, Reg::SI), Reg::CX),
+                Inst::mov(Mem::Disp(Reg::BX, Reg::DI), Reg::CX),
+                Inst::mov(Mem::Disp(Reg::BP, Reg::SI), Reg::CX),
+                Inst::mov(Mem::Disp(Reg::BP, Reg::DI), Reg::CX),
+                Inst::mov(Reg::SI, Reg::CX),
+                Inst::mov(Reg::DI, Reg::CX),
+                Inst::mov(Addr(75), Reg::CX),
+                Inst::mov(Reg::BX, Reg::CX),
+            ],
+        );
     }
 
     #[test]
@@ -320,12 +477,23 @@ mod tests {
         assert_eq!(assembled, reassembled);
     }
 
-    fn assert_inst_eq(source: &str, instruction: Instruction) {
+    fn assert_inst_eq(source: &str, instruction: Inst) {
         let original = assemble(source);
         let program = Program::decode(original).unwrap();
 
         assert_eq!(program.instructions.len(), 1);
         assert_eq!(program.instructions[0], instruction);
+    }
+
+    fn assert_insts_eq(source: &str, instructions: &[Inst]) {
+        let original = assemble(source);
+        let program = Program::decode(original).unwrap();
+
+        assert_eq!(program.instructions.len(), instructions.len());
+
+        for (index, instruction) in instructions.iter().enumerate() {
+            assert_eq!(&program.instructions[index], instruction);
+        }
     }
 
     fn assemble(source: &str) -> Bytes {
