@@ -99,10 +99,10 @@ impl Inst {
             }
             0b00 => {
                 let mut dst = Dst::Reg(Reg::from_w_reg(w, reg)?);
-                let mut src: Src = if rm == 0b100 {
-                    Reg::SI.into()
+                let mut mem: Mem = if rm == 0b100 {
+                    Mem::R(Reg::SI)
                 } else if rm == 0b101 {
-                    Reg::DI.into()
+                    Mem::R(Reg::DI)
                 } else if rm == 0b110 {
                     if w == 1 {
                         Addr(content.try_get_u16_le()?)
@@ -111,22 +111,25 @@ impl Inst {
                     }
                     .into()
                 } else if rm == 0b111 {
-                    Reg::BX.into()
+                    Mem::R(Reg::BX)
                 } else {
                     let lhs = if rm >> 1 == 0 { Reg::BX } else { Reg::BP };
                     let rhs = if rm & 1 == 0 { Reg::SI } else { Reg::DI };
 
-                    Mem::Disp(lhs, rhs).into()
+                    Mem::RR(lhs, rhs)
                 };
 
-                if d == 0 {
+                let src = if d == 0 {
                     let old_dst = dst;
-                    dst = src.try_into()?;
-                    src = old_dst.into();
-                }
+                    dst = Dst::Mem(mem);
+                    old_dst.into()
+                } else {
+                    Src::Mem(mem)
+                };
 
                 Ok(Self::Mov { dst, src })
             }
+            // 0b01 => {}
             _ => anyhow::bail!("TODO mod: {mod_:b}"),
         }
     }
@@ -251,7 +254,10 @@ impl Display for Src {
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Mem {
     Addr(Addr),
-    Disp(Reg, Reg),
+    R(Reg),
+    RR(Reg, Reg),
+    RD(Reg, u16),
+    RRD(Reg, Reg, u16),
 }
 
 impl From<Addr> for Mem {
@@ -264,7 +270,10 @@ impl Display for Mem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Addr(addr) => write!(f, "{addr}"),
-            Self::Disp(a, b) => write!(f, "[{a} + {b}]"),
+            Self::R(a) => write!(f, "[{a}]"),
+            Self::RR(a, b) => write!(f, "[{a} + {b}]"),
+            Self::RD(a, b) => write!(f, "[{a} + {b}]"),
+            Self::RRD(a, b, c) => write!(f, "[{a} + {b} + {c}]"),
         }
     }
 }
@@ -375,36 +384,36 @@ mod tests {
                 mov cx, [bx+di]
                 mov cx, [bp+si]
                 mov cx, [bp+di]
-                mov cx, si
-                mov cx, di
+                mov cx, [si]
+                mov cx, [di]
                 mov cx, [75]
-                mov cx, bx
+                mov cx, [bx]
                 mov [bx+si], cx
                 mov [bx+di], cx
                 mov [bp+si], cx
                 mov [bp+di], cx
-                mov si, cx
-                mov di, cx
+                mov [si], cx
+                mov [di], cx
                 mov [75], cx
-                mov bx, cx
+                mov [bx], cx
             "},
             &[
-                Inst::mov(Reg::CX, Mem::Disp(Reg::BX, Reg::SI)),
-                Inst::mov(Reg::CX, Mem::Disp(Reg::BX, Reg::DI)),
-                Inst::mov(Reg::CX, Mem::Disp(Reg::BP, Reg::SI)),
-                Inst::mov(Reg::CX, Mem::Disp(Reg::BP, Reg::DI)),
-                Inst::mov(Reg::CX, Reg::SI),
-                Inst::mov(Reg::CX, Reg::DI),
+                Inst::mov(Reg::CX, Mem::RR(Reg::BX, Reg::SI)),
+                Inst::mov(Reg::CX, Mem::RR(Reg::BX, Reg::DI)),
+                Inst::mov(Reg::CX, Mem::RR(Reg::BP, Reg::SI)),
+                Inst::mov(Reg::CX, Mem::RR(Reg::BP, Reg::DI)),
+                Inst::mov(Reg::CX, Mem::R(Reg::SI)),
+                Inst::mov(Reg::CX, Mem::R(Reg::DI)),
                 Inst::mov(Reg::CX, Addr(75)),
-                Inst::mov(Reg::CX, Reg::BX),
-                Inst::mov(Mem::Disp(Reg::BX, Reg::SI), Reg::CX),
-                Inst::mov(Mem::Disp(Reg::BX, Reg::DI), Reg::CX),
-                Inst::mov(Mem::Disp(Reg::BP, Reg::SI), Reg::CX),
-                Inst::mov(Mem::Disp(Reg::BP, Reg::DI), Reg::CX),
-                Inst::mov(Reg::SI, Reg::CX),
-                Inst::mov(Reg::DI, Reg::CX),
+                Inst::mov(Reg::CX, Mem::R(Reg::BX)),
+                Inst::mov(Mem::RR(Reg::BX, Reg::SI), Reg::CX),
+                Inst::mov(Mem::RR(Reg::BX, Reg::DI), Reg::CX),
+                Inst::mov(Mem::RR(Reg::BP, Reg::SI), Reg::CX),
+                Inst::mov(Mem::RR(Reg::BP, Reg::DI), Reg::CX),
+                Inst::mov(Mem::R(Reg::SI), Reg::CX),
+                Inst::mov(Mem::R(Reg::DI), Reg::CX),
                 Inst::mov(Addr(75), Reg::CX),
-                Inst::mov(Reg::BX, Reg::CX),
+                Inst::mov(Mem::R(Reg::BX), Reg::CX),
             ],
         );
     }
@@ -478,22 +487,28 @@ mod tests {
     }
 
     fn assert_inst_eq(source: &str, instruction: Inst) {
-        let original = assemble(source);
-        let program = Program::decode(original).unwrap();
+        let assembled = assemble(source);
+        let program = Program::decode(assembled.clone()).unwrap();
 
         assert_eq!(program.instructions.len(), 1);
         assert_eq!(program.instructions[0], instruction);
+
+        let reassembled = assemble(&program.to_string());
+        assert_eq!(assembled, reassembled);
     }
 
     fn assert_insts_eq(source: &str, instructions: &[Inst]) {
-        let original = assemble(source);
-        let program = Program::decode(original).unwrap();
+        let assembled = assemble(source);
+        let program = Program::decode(assembled.clone()).unwrap();
 
         assert_eq!(program.instructions.len(), instructions.len());
 
         for (index, instruction) in instructions.iter().enumerate() {
             assert_eq!(&program.instructions[index], instruction);
         }
+
+        let reassembled = assemble(&program.to_string());
+        assert_eq!(assembled, reassembled);
     }
 
     fn assemble(source: &str) -> Bytes {
