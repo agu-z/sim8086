@@ -87,19 +87,16 @@ impl Inst {
         match mod_ {
             0b00 => {
                 let mut dst = Dst::Reg(Reg::from_w_reg(w, reg)?);
-                let mem: Mem = if rm == 0b100 {
-                    Mem::R(Reg::SI)
-                } else if rm == 0b101 {
-                    Mem::R(Reg::DI)
-                } else if rm == 0b110 {
-                    Mem::Addr(Addr(content.try_get_u16_le()?))
-                } else if rm == 0b111 {
-                    Mem::R(Reg::BX)
-                } else {
-                    let lhs = if rm >> 1 == 0 { Reg::BX } else { Reg::BP };
-                    let rhs = if rm & 1 == 0 { Reg::SI } else { Reg::DI };
-
-                    Mem::RR(lhs, rhs)
+                let mem: Mem = match rm {
+                    0b000 => Mem::BX_SI,
+                    0b001 => Mem::BX_DI,
+                    0b010 => Mem::BP_SI,
+                    0b011 => Mem::BP_DI,
+                    0b100 => Mem::SI,
+                    0b101 => Mem::DI,
+                    0b110 => Mem::Addr(Addr(content.try_get_u16_le()?)),
+                    0b111 => Mem::BX,
+                    _ => unreachable!(),
                 };
 
                 let src = if d == 0 {
@@ -121,18 +118,21 @@ impl Inst {
 
                 let mut dst = Dst::Reg(Reg::from_w_reg(w, reg)?);
                 let mem: Mem = if rm == 0b100 {
-                    Mem::RD(Reg::SI, disp)
+                    Mem::SI_D(disp)
                 } else if rm == 0b101 {
-                    Mem::RD(Reg::DI, disp)
+                    Mem::DI_D(disp)
                 } else if rm == 0b110 {
-                    Mem::RD(Reg::BP, disp)
+                    Mem::BP_D(disp)
                 } else if rm == 0b111 {
-                    Mem::RD(Reg::BX, disp)
+                    Mem::BX_D(disp)
                 } else {
-                    let lhs = if rm >> 1 == 0 { Reg::BX } else { Reg::BP };
-                    let rhs = if rm & 1 == 0 { Reg::SI } else { Reg::DI };
-
-                    Mem::RRD(lhs, rhs, disp)
+                    match rm {
+                        0b000 => Mem::BX_SI_D(disp),
+                        0b001 => Mem::BX_DI_D(disp),
+                        0b010 => Mem::BP_SI_D(disp),
+                        0b011 => Mem::BP_DI_D(disp),
+                        _ => unreachable!(),
+                    }
                 };
 
                 let src = if d == 0 {
@@ -279,12 +279,24 @@ impl Display for Src {
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
+#[allow(non_camel_case_types)]
 enum Mem {
     Addr(Addr),
-    R(Reg),
-    RR(Reg, Reg),
-    RD(Reg, u16),
-    RRD(Reg, Reg, u16),
+    BX_SI,
+    BX_DI,
+    BP_SI,
+    BP_DI,
+    SI,
+    DI,
+    BX,
+    BX_D(u16),
+    BP_D(u16),
+    BX_SI_D(u16),
+    BX_DI_D(u16),
+    BP_SI_D(u16),
+    BP_DI_D(u16),
+    SI_D(u16),
+    DI_D(u16),
 }
 
 impl From<Addr> for Mem {
@@ -297,10 +309,21 @@ impl Display for Mem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Addr(addr) => write!(f, "{addr}"),
-            Self::R(a) => write!(f, "[{a}]"),
-            Self::RR(a, b) => write!(f, "[{a} + {b}]"),
-            Self::RD(a, b) => write!(f, "[{a} + {b}]"),
-            Self::RRD(a, b, c) => write!(f, "[{a} + {b} + {c}]"),
+            Self::BX_SI => write!(f, "[bx + si]"),
+            Self::BX_DI => write!(f, "[bx + di]"),
+            Self::BP_SI => write!(f, "[bp + si]"),
+            Self::BP_DI => write!(f, "[bp + di]"),
+            Self::SI => write!(f, "[si]"),
+            Self::DI => write!(f, "[di]"),
+            Self::BX => write!(f, "[bx]"),
+            Self::BX_SI_D(d) => write!(f, "[bx + si + {d}]"),
+            Self::BX_DI_D(d) => write!(f, "[bx + di + {d}]"),
+            Self::BP_SI_D(d) => write!(f, "[bp + si + {d}]"),
+            Self::BP_DI_D(d) => write!(f, "[bp + di + {d}]"),
+            Self::SI_D(d) => write!(f, "[si + {d}]"),
+            Self::DI_D(d) => write!(f, "[di + {d}]"),
+            Self::BP_D(d) => write!(f, "[bp + {d}]"),
+            Self::BX_D(d) => write!(f, "[bx + {d}]"),
         }
     }
 }
@@ -425,22 +448,22 @@ mod tests {
                 mov [bx], cx
             "},
             &[
-                Inst::mov(Reg::CX, Mem::RR(Reg::BX, Reg::SI)),
-                Inst::mov(Reg::CX, Mem::RR(Reg::BX, Reg::DI)),
-                Inst::mov(Reg::CX, Mem::RR(Reg::BP, Reg::SI)),
-                Inst::mov(Reg::CX, Mem::RR(Reg::BP, Reg::DI)),
-                Inst::mov(Reg::CX, Mem::R(Reg::SI)),
-                Inst::mov(Reg::CX, Mem::R(Reg::DI)),
+                Inst::mov(Reg::CX, Mem::BX_SI),
+                Inst::mov(Reg::CX, Mem::BX_DI),
+                Inst::mov(Reg::CX, Mem::BP_SI),
+                Inst::mov(Reg::CX, Mem::BP_DI),
+                Inst::mov(Reg::CX, Mem::SI),
+                Inst::mov(Reg::CX, Mem::DI),
                 Inst::mov(Reg::CX, Addr(75)),
-                Inst::mov(Reg::CX, Mem::R(Reg::BX)),
-                Inst::mov(Mem::RR(Reg::BX, Reg::SI), Reg::CX),
-                Inst::mov(Mem::RR(Reg::BX, Reg::DI), Reg::CX),
-                Inst::mov(Mem::RR(Reg::BP, Reg::SI), Reg::CX),
-                Inst::mov(Mem::RR(Reg::BP, Reg::DI), Reg::CX),
-                Inst::mov(Mem::R(Reg::SI), Reg::CX),
-                Inst::mov(Mem::R(Reg::DI), Reg::CX),
+                Inst::mov(Reg::CX, Mem::BX),
+                Inst::mov(Mem::BX_SI, Reg::CX),
+                Inst::mov(Mem::BX_DI, Reg::CX),
+                Inst::mov(Mem::BP_SI, Reg::CX),
+                Inst::mov(Mem::BP_DI, Reg::CX),
+                Inst::mov(Mem::SI, Reg::CX),
+                Inst::mov(Mem::DI, Reg::CX),
                 Inst::mov(Addr(75), Reg::CX),
-                Inst::mov(Mem::R(Reg::BX), Reg::CX),
+                Inst::mov(Mem::BX, Reg::CX),
             ],
         );
     }
@@ -459,14 +482,14 @@ mod tests {
                 mov bh, [bx + 5]
             "},
             &[
-                Inst::mov(Reg::AX, Mem::RRD(Reg::BX, Reg::SI, 8)),
-                Inst::mov(Reg::BX, Mem::RRD(Reg::BX, Reg::DI, 12)),
-                Inst::mov(Reg::CX, Mem::RRD(Reg::BP, Reg::SI, 4)),
-                Inst::mov(Reg::DX, Mem::RRD(Reg::BP, Reg::DI, 7)),
-                Inst::mov(Reg::AH, Mem::RD(Reg::SI, 3)),
-                Inst::mov(Reg::AL, Mem::RD(Reg::DI, 1)),
-                Inst::mov(Reg::BL, Mem::RD(Reg::BP, 9)),
-                Inst::mov(Reg::BH, Mem::RD(Reg::BX, 5)),
+                Inst::mov(Reg::AX, Mem::BX_SI_D(8)),
+                Inst::mov(Reg::BX, Mem::BX_DI_D(12)),
+                Inst::mov(Reg::CX, Mem::BP_SI_D(4)),
+                Inst::mov(Reg::DX, Mem::BP_DI_D(7)),
+                Inst::mov(Reg::AH, Mem::SI_D(3)),
+                Inst::mov(Reg::AL, Mem::DI_D(1)),
+                Inst::mov(Reg::BL, Mem::BP_D(9)),
+                Inst::mov(Reg::BH, Mem::BX_D(5)),
             ],
         );
     }
@@ -485,14 +508,14 @@ mod tests {
                 mov [bx + 5], bh
             "},
             &[
-                Inst::mov(Mem::RRD(Reg::BX, Reg::SI, 8), Reg::AX),
-                Inst::mov(Mem::RRD(Reg::BX, Reg::DI, 12), Reg::BX),
-                Inst::mov(Mem::RRD(Reg::BP, Reg::SI, 4), Reg::CX),
-                Inst::mov(Mem::RRD(Reg::BP, Reg::DI, 7), Reg::DX),
-                Inst::mov(Mem::RD(Reg::SI, 3), Reg::AH),
-                Inst::mov(Mem::RD(Reg::DI, 1), Reg::AL),
-                Inst::mov(Mem::RD(Reg::BP, 9), Reg::BL),
-                Inst::mov(Mem::RD(Reg::BX, 5), Reg::BH),
+                Inst::mov(Mem::BX_SI_D(8), Reg::AX),
+                Inst::mov(Mem::BX_DI_D(12), Reg::BX),
+                Inst::mov(Mem::BP_SI_D(4), Reg::CX),
+                Inst::mov(Mem::BP_DI_D(7), Reg::DX),
+                Inst::mov(Mem::SI_D(3), Reg::AH),
+                Inst::mov(Mem::DI_D(1), Reg::AL),
+                Inst::mov(Mem::BP_D(9), Reg::BL),
+                Inst::mov(Mem::BX_D(5), Reg::BH),
             ],
         );
     }
@@ -511,14 +534,14 @@ mod tests {
                 mov di, [bx + 8000]
             "},
             &[
-                Inst::mov(Reg::AX, Mem::RRD(Reg::BX, Reg::SI, 1000)),
-                Inst::mov(Reg::BX, Mem::RRD(Reg::BX, Reg::DI, 2000)),
-                Inst::mov(Reg::CX, Mem::RRD(Reg::BP, Reg::SI, 3000)),
-                Inst::mov(Reg::DX, Mem::RRD(Reg::BP, Reg::DI, 4000)),
-                Inst::mov(Reg::SP, Mem::RD(Reg::SI, 5000)),
-                Inst::mov(Reg::BP, Mem::RD(Reg::DI, 6000)),
-                Inst::mov(Reg::SI, Mem::RD(Reg::BP, 7000)),
-                Inst::mov(Reg::DI, Mem::RD(Reg::BX, 8000)),
+                Inst::mov(Reg::AX, Mem::BX_SI_D(1000)),
+                Inst::mov(Reg::BX, Mem::BX_DI_D(2000)),
+                Inst::mov(Reg::CX, Mem::BP_SI_D(3000)),
+                Inst::mov(Reg::DX, Mem::BP_DI_D(4000)),
+                Inst::mov(Reg::SP, Mem::SI_D(5000)),
+                Inst::mov(Reg::BP, Mem::DI_D(6000)),
+                Inst::mov(Reg::SI, Mem::BP_D(7000)),
+                Inst::mov(Reg::DI, Mem::BX_D(8000)),
             ],
         );
     }
@@ -537,14 +560,14 @@ mod tests {
                 mov [bx + 8000], di
             "},
             &[
-                Inst::mov(Mem::RRD(Reg::BX, Reg::SI, 1000), Reg::AX),
-                Inst::mov(Mem::RRD(Reg::BX, Reg::DI, 2000), Reg::BX),
-                Inst::mov(Mem::RRD(Reg::BP, Reg::SI, 3000), Reg::CX),
-                Inst::mov(Mem::RRD(Reg::BP, Reg::DI, 4000), Reg::DX),
-                Inst::mov(Mem::RD(Reg::SI, 5000), Reg::SP),
-                Inst::mov(Mem::RD(Reg::DI, 6000), Reg::BP),
-                Inst::mov(Mem::RD(Reg::BP, 7000), Reg::SI),
-                Inst::mov(Mem::RD(Reg::BX, 8000), Reg::DI),
+                Inst::mov(Mem::BX_SI_D(1000), Reg::AX),
+                Inst::mov(Mem::BX_DI_D(2000), Reg::BX),
+                Inst::mov(Mem::BP_SI_D(3000), Reg::CX),
+                Inst::mov(Mem::BP_DI_D(4000), Reg::DX),
+                Inst::mov(Mem::SI_D(5000), Reg::SP),
+                Inst::mov(Mem::DI_D(6000), Reg::BP),
+                Inst::mov(Mem::BP_D(7000), Reg::SI),
+                Inst::mov(Mem::BX_D(8000), Reg::DI),
             ],
         );
     }
