@@ -117,22 +117,16 @@ impl Inst {
                 };
 
                 let mut dst = Dst::Reg(Reg::from_w_reg(w, reg)?);
-                let mem: Mem = if rm == 0b100 {
-                    Mem::SI_D(disp)
-                } else if rm == 0b101 {
-                    Mem::DI_D(disp)
-                } else if rm == 0b110 {
-                    Mem::BP_D(disp)
-                } else if rm == 0b111 {
-                    Mem::BX_D(disp)
-                } else {
-                    match rm {
-                        0b000 => Mem::BX_SI_D(disp),
-                        0b001 => Mem::BX_DI_D(disp),
-                        0b010 => Mem::BP_SI_D(disp),
-                        0b011 => Mem::BP_DI_D(disp),
-                        _ => unreachable!(),
-                    }
+                let mem: Mem = match rm {
+                    0b000 => Mem::BX_SI_D(disp),
+                    0b001 => Mem::BX_DI_D(disp),
+                    0b010 => Mem::BP_SI_D(disp),
+                    0b011 => Mem::BP_DI_D(disp),
+                    0b100 => Mem::SI_D(disp),
+                    0b101 => Mem::DI_D(disp),
+                    0b110 => Mem::BP_D(disp),
+                    0b111 => Mem::BX_D(disp),
+                    _ => unreachable!(),
                 };
 
                 let src = if d == 0 {
