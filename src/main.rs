@@ -62,6 +62,8 @@ enum Inst {
     Mov { dst: Dst, src: Src },
 }
 
+// TODO use i16 for disp and imm
+
 impl Inst {
     fn read(content: &mut Bytes) -> Result<Self> {
         let op = content.try_get_u8()?;
@@ -70,6 +72,8 @@ impl Inst {
             Self::read_mov_rm_r(op, content)
         } else if op >> 4 == 0b1011 {
             Self::read_mov_r_i(op, content)
+        } else if op >> 1 == 0b1100011 {
+            Self::read_mov_rm_i(op, content)
         } else {
             anyhow::bail!("TODO: {op:b}");
         }
@@ -91,6 +95,24 @@ impl Inst {
         };
 
         Ok(Self::Mov { dst, src })
+    }
+
+    fn read_mov_rm_i(op_w: u8, content: &mut Bytes) -> Result<Self> {
+        let w = op_w & 1;
+
+        let mod_reg_rm = content.try_get_u8()?;
+        let dst = Self::read_rm(w, mod_reg_rm, content)?;
+
+        let imm = if w == 0 {
+            Imm::Byte(content.try_get_u8()?)
+        } else {
+            Imm::Word(content.try_get_u16_le()?)
+        };
+
+        Ok(Self::Mov {
+            dst,
+            src: Src::Imm(imm),
+        })
     }
 
     fn read_rm(w: u8, mod_reg_rm: u8, content: &mut Bytes) -> Result<Dst> {
@@ -140,10 +162,10 @@ impl Inst {
     fn read_mov_r_i(op_w_reg: u8, content: &mut Bytes) -> Result<Self> {
         let w = (op_w_reg >> 3) & 1;
         let reg = op_w_reg & 0b111;
-        let imm = if w == 1 {
-            content.try_get_u16_le()?
+        let imm = if w == 0 {
+            Imm::Byte(content.try_get_u8()?)
         } else {
-            content.try_get_u8()? as u16
+            Imm::Word(content.try_get_u16_le()?)
         };
 
         Ok(Self::Mov {
@@ -212,9 +234,15 @@ impl TryFrom<Src> for Dst {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Src {
-    Imm(u16),
+    Imm(Imm),
     Reg(Reg),
     Mem(Mem),
+}
+
+impl<T: Into<Imm>> From<T> for Src {
+    fn from(value: T) -> Self {
+        Self::Imm(value.into())
+    }
 }
 
 impl From<Reg> for Src {
@@ -223,15 +251,9 @@ impl From<Reg> for Src {
     }
 }
 
-impl From<u16> for Src {
-    fn from(value: u16) -> Self {
-        Self::Imm(value)
-    }
-}
-
-impl<T: Into<Mem>> From<T> for Src {
-    fn from(value: T) -> Self {
-        Self::Mem(value.into())
+impl From<Mem> for Src {
+    fn from(value: Mem) -> Self {
+        Self::Mem(value)
     }
 }
 
@@ -247,10 +269,37 @@ impl From<Dst> for Src {
 impl Display for Src {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Src::Reg(reg) => write!(f, "{reg}"),
             Src::Imm(imm) => write!(f, "{imm}"),
+            Src::Reg(reg) => write!(f, "{reg}"),
             Src::Mem(mem) => write!(f, "{mem}"),
         }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Imm {
+    Byte(u8),
+    Word(u16),
+}
+
+impl Display for Imm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Imm::Byte(byte) => write!(f, "byte {byte}"),
+            Imm::Word(word) => write!(f, "word {word}"),
+        }
+    }
+}
+
+impl From<u8> for Imm {
+    fn from(value: u8) -> Self {
+        Imm::Byte(value)
+    }
+}
+
+impl From<u16> for Imm {
+    fn from(value: u16) -> Self {
+        Imm::Word(value)
     }
 }
 
@@ -399,7 +448,7 @@ mod tests {
 
     #[test]
     fn test_r_i() {
-        assert_inst_eq("mov ax, 12", Inst::mov(Reg::AX, 12));
+        assert_inst_eq("mov ax, 12", Inst::mov(Reg::AX, 12u16));
     }
 
     #[test]
@@ -430,7 +479,7 @@ mod tests {
                 Inst::mov(Reg::CX, Mem::BP_DI),
                 Inst::mov(Reg::CX, Mem::SI),
                 Inst::mov(Reg::CX, Mem::DI),
-                Inst::mov(Reg::CX, Addr(75)),
+                Inst::mov(Reg::CX, Mem::Addr(Addr(75))),
                 Inst::mov(Reg::CX, Mem::BX),
                 Inst::mov(Mem::BX_SI, Reg::CX),
                 Inst::mov(Mem::BX_DI, Reg::CX),
@@ -467,6 +516,17 @@ mod tests {
                 Inst::mov(Reg::BL, Mem::BP_D(9)),
                 Inst::mov(Reg::BH, Mem::BX_D(5)),
             ],
+        );
+    }
+
+    #[test]
+    fn test_rm_i() {
+        assert_insts_eq(
+            indoc! {"
+            mov [si], byte 12
+            mov [si], word 12
+        "},
+            &[Inst::mov(Mem::SI, 12u8), Inst::mov(Mem::SI, 12u16)],
         );
     }
 
@@ -604,6 +664,34 @@ mod tests {
             mov [bx + di], cx
             mov [bp + si], cl
             mov [bp], ch
+        "});
+    }
+
+    #[test]
+    fn test_0040() {
+        assert_roundtrip(indoc! {"
+            bits 16
+
+            ; Signed displacements
+            mov ax, [bx + di - 37]
+            mov [si - 300], cx
+            mov dx, [bx - 32]
+
+            ; Explicit sizes
+            mov [bp + di], byte 7
+            mov [di + 901], word 347
+
+            ; Direct address
+            mov bp, [5]
+            mov bx, [3458]
+
+            ; Memory-to-accumulator test
+            mov ax, [2555]
+            mov ax, [16]
+
+            ; Accumulator-to-memory test
+            mov [2554], ax
+            mov [15], ax
         "});
     }
 
