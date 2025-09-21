@@ -3,7 +3,7 @@ use bytes::{Buf as _, Bytes};
 use std::{
     env::args,
     fmt::{self, Display},
-    fs, mem,
+    fs,
     path::Path,
 };
 
@@ -80,35 +80,36 @@ impl Inst {
         let w = op_dw & 1;
 
         let mod_reg_rm = content.try_get_u8()?;
-        let mod_ = mod_reg_rm >> 6;
-        let rm = mod_reg_rm & 0b111;
         let reg = (mod_reg_rm & 0b111000) >> 3;
+        let reg = Reg::from_w_reg(w, reg)?;
+        let rm = Self::read_rm(w, mod_reg_rm, content)?;
 
-        match mod_ {
-            0b00 => {
-                let mut dst = Dst::Reg(Reg::from_w_reg(w, reg)?);
-                let mem: Mem = match rm {
-                    0b000 => Mem::BX_SI,
-                    0b001 => Mem::BX_DI,
-                    0b010 => Mem::BP_SI,
-                    0b011 => Mem::BP_DI,
-                    0b100 => Mem::SI,
-                    0b101 => Mem::DI,
-                    0b110 => Mem::Addr(Addr(content.try_get_u16_le()?)),
-                    0b111 => Mem::BX,
-                    _ => unreachable!(),
-                };
+        let (dst, src) = if d == 0 {
+            (rm, Src::Reg(reg))
+        } else {
+            (Dst::Reg(reg), rm.into())
+        };
 
-                let src = if d == 0 {
-                    let old_dst = dst;
-                    dst = Dst::Mem(mem);
-                    old_dst.into()
-                } else {
-                    Src::Mem(mem)
-                };
+        Ok(Self::Mov { dst, src })
+    }
 
-                Ok(Self::Mov { dst, src })
+    fn read_rm(w: u8, mod_reg_rm: u8, content: &mut Bytes) -> Result<Dst> {
+        let mod_ = mod_reg_rm >> 6;
+        let rm_bits = mod_reg_rm & 0b111;
+
+        let rm = match mod_ {
+            0b00 => match rm_bits {
+                0b000 => Mem::BX_SI,
+                0b001 => Mem::BX_DI,
+                0b010 => Mem::BP_SI,
+                0b011 => Mem::BP_DI,
+                0b100 => Mem::SI,
+                0b101 => Mem::DI,
+                0b110 => Mem::Addr(Addr(content.try_get_u16_le()?)),
+                0b111 => Mem::BX,
+                _ => unreachable!(),
             }
+            .into(),
             0b01 | 0b10 => {
                 let disp = if mod_ == 0b01 {
                     content.try_get_u8()? as u16
@@ -116,8 +117,7 @@ impl Inst {
                     content.try_get_u16_le()?
                 };
 
-                let mut dst = Dst::Reg(Reg::from_w_reg(w, reg)?);
-                let mem: Mem = match rm {
+                match rm_bits {
                     0b000 => Mem::BX_SI_D(disp),
                     0b001 => Mem::BX_DI_D(disp),
                     0b010 => Mem::BP_SI_D(disp),
@@ -127,32 +127,14 @@ impl Inst {
                     0b110 => Mem::BP_D(disp),
                     0b111 => Mem::BX_D(disp),
                     _ => unreachable!(),
-                };
-
-                let src = if d == 0 {
-                    let old_dst = dst;
-                    dst = Dst::Mem(mem);
-                    old_dst.into()
-                } else {
-                    Src::Mem(mem)
-                };
-
-                Ok(Self::Mov { dst, src })
-            }
-            0b11 => {
-                let mut dst = Reg::from_w_reg(w, reg)?;
-                let mut src = Reg::from_w_reg(w, rm)?;
-                if d == 0 {
-                    mem::swap(&mut dst, &mut src);
                 }
-
-                Ok(Self::Mov {
-                    dst: Dst::Reg(dst),
-                    src: Src::Reg(src),
-                })
+                .into()
             }
+            0b11 => Reg::from_w_reg(w, rm_bits)?.into(),
             _ => anyhow::bail!("TODO mod: {mod_:b}"),
-        }
+        };
+
+        Ok(rm)
     }
 
     fn read_mov_r_i(op_w_reg: u8, content: &mut Bytes) -> Result<Self> {
