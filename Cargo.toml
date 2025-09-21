@@ -10,3 +10,4 @@ bytes = "1.10.1"
 [dev-dependencies]
 indoc = "2.0.6"
 tempfile = "3.22.0"
+pretty_assertions = "1.4.1"

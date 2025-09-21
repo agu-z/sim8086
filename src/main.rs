@@ -62,18 +62,22 @@ enum Inst {
     Mov { dst: Dst, src: Src },
 }
 
-// TODO use i16 for disp and imm
-
 impl Inst {
     fn read(content: &mut Bytes) -> Result<Self> {
         let op = content.try_get_u8()?;
 
+        // Register/memory to/from register
         if op >> 2 == 0b100010 {
             Self::read_mov_rm_r(op, content)
-        } else if op >> 4 == 0b1011 {
-            Self::read_mov_r_i(op, content)
+        // Immediate to register/memory
         } else if op >> 1 == 0b1100011 {
             Self::read_mov_rm_i(op, content)
+        // Immediate to register
+        } else if op >> 4 == 0b1011 {
+            Self::read_mov_r_i(op, content)
+        // Memory to/from accumulator
+        } else if op >> 2 == 0b101000 {
+            Self::read_mov_m_acc(op, content)
         } else {
             anyhow::bail!("TODO: {op:b}");
         }
@@ -104,9 +108,9 @@ impl Inst {
         let dst = Self::read_rm(w, mod_reg_rm, content)?;
 
         let imm = if w == 0 {
-            Imm::Byte(content.try_get_u8()?)
+            Imm::Byte(content.try_get_i8()?)
         } else {
-            Imm::Word(content.try_get_u16_le()?)
+            Imm::Word(content.try_get_i16_le()?)
         };
 
         Ok(Self::Mov {
@@ -127,16 +131,16 @@ impl Inst {
                 0b011 => Mem::BP_DI,
                 0b100 => Mem::SI,
                 0b101 => Mem::DI,
-                0b110 => Mem::Addr(Addr(content.try_get_u16_le()?)),
+                0b110 => Mem::Addr(content.try_get_u16_le()?),
                 0b111 => Mem::BX,
                 _ => unreachable!(),
             }
             .into(),
             0b01 | 0b10 => {
                 let disp = if mod_ == 0b01 {
-                    content.try_get_u8()? as u16
+                    content.try_get_i8()? as i16
                 } else {
-                    content.try_get_u16_le()?
+                    content.try_get_i16_le()?
                 };
 
                 match rm_bits {
@@ -163,15 +167,31 @@ impl Inst {
         let w = (op_w_reg >> 3) & 1;
         let reg = op_w_reg & 0b111;
         let imm = if w == 0 {
-            Imm::Byte(content.try_get_u8()?)
+            Imm::Byte(content.try_get_i8()?)
         } else {
-            Imm::Word(content.try_get_u16_le()?)
+            Imm::Word(content.try_get_i16_le()?)
         };
 
         Ok(Self::Mov {
             dst: Dst::Reg(Reg::from_w_reg(w, reg)?),
             src: Src::Imm(imm),
         })
+    }
+
+    fn read_mov_m_acc(op_dw: u8, content: &mut Bytes) -> Result<Self> {
+        let d = (op_dw & 0b10) >> 1;
+        let w = op_dw & 1;
+
+        let acc = if w == 0 { Reg::AL } else { Reg::AX };
+        let mem = Mem::Addr(content.try_get_u16_le()?);
+
+        let (dst, src) = if d == 0 {
+            (Dst::Reg(acc), Src::Mem(mem))
+        } else {
+            (Dst::Mem(mem), Src::Reg(acc))
+        };
+
+        Ok(Self::Mov { dst, src })
     }
 
     // DSL
@@ -187,7 +207,7 @@ impl Display for Inst {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Inst::Mov { dst, src } => {
-                writeln!(f, "mov {dst}, {src}")
+                writeln!(f, "mov {dst},{src}")
             }
         }
     }
@@ -278,8 +298,8 @@ impl Display for Src {
 
 #[derive(Debug, PartialEq, Clone, Copy)]
 enum Imm {
-    Byte(u8),
-    Word(u16),
+    Byte(i8),
+    Word(i16),
 }
 
 impl Display for Imm {
@@ -291,14 +311,14 @@ impl Display for Imm {
     }
 }
 
-impl From<u8> for Imm {
-    fn from(value: u8) -> Self {
+impl From<i8> for Imm {
+    fn from(value: i8) -> Self {
         Imm::Byte(value)
     }
 }
 
-impl From<u16> for Imm {
-    fn from(value: u16) -> Self {
+impl From<i16> for Imm {
+    fn from(value: i16) -> Self {
         Imm::Word(value)
     }
 }
@@ -306,7 +326,7 @@ impl From<u16> for Imm {
 #[derive(Debug, PartialEq, Clone, Copy)]
 #[allow(non_camel_case_types)]
 enum Mem {
-    Addr(Addr),
+    Addr(u16),
     BX_SI,
     BX_DI,
     BP_SI,
@@ -314,26 +334,20 @@ enum Mem {
     SI,
     DI,
     BX,
-    BX_D(u16),
-    BP_D(u16),
-    BX_SI_D(u16),
-    BX_DI_D(u16),
-    BP_SI_D(u16),
-    BP_DI_D(u16),
-    SI_D(u16),
-    DI_D(u16),
-}
-
-impl From<Addr> for Mem {
-    fn from(value: Addr) -> Self {
-        Mem::Addr(value)
-    }
+    BX_D(i16),
+    BP_D(i16),
+    BX_SI_D(i16),
+    BX_DI_D(i16),
+    BP_SI_D(i16),
+    BP_DI_D(i16),
+    SI_D(i16),
+    DI_D(i16),
 }
 
 impl Display for Mem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Addr(addr) => write!(f, "{addr}"),
+            Self::Addr(addr) => write!(f, "[{addr}]"),
             Self::BX_SI => write!(f, "[bx + si]"),
             Self::BX_DI => write!(f, "[bx + di]"),
             Self::BP_SI => write!(f, "[bp + si]"),
@@ -411,15 +425,6 @@ impl Display for Reg {
     }
 }
 
-#[derive(Debug, PartialEq, Clone, Copy)]
-struct Addr(u16);
-
-impl Display for Addr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}]", self.0)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use indoc::indoc;
@@ -448,7 +453,7 @@ mod tests {
 
     #[test]
     fn test_r_i() {
-        assert_inst_eq("mov ax, 12", Inst::mov(Reg::AX, 12u16));
+        assert_inst_eq("mov ax, 12", Inst::mov(Reg::AX, 12i16));
     }
 
     #[test]
@@ -479,7 +484,7 @@ mod tests {
                 Inst::mov(Reg::CX, Mem::BP_DI),
                 Inst::mov(Reg::CX, Mem::SI),
                 Inst::mov(Reg::CX, Mem::DI),
-                Inst::mov(Reg::CX, Mem::Addr(Addr(75))),
+                Inst::mov(Reg::CX, Mem::Addr(75)),
                 Inst::mov(Reg::CX, Mem::BX),
                 Inst::mov(Mem::BX_SI, Reg::CX),
                 Inst::mov(Mem::BX_DI, Reg::CX),
@@ -487,7 +492,7 @@ mod tests {
                 Inst::mov(Mem::BP_DI, Reg::CX),
                 Inst::mov(Mem::SI, Reg::CX),
                 Inst::mov(Mem::DI, Reg::CX),
-                Inst::mov(Addr(75), Reg::CX),
+                Inst::mov(Mem::Addr(75), Reg::CX),
                 Inst::mov(Mem::BX, Reg::CX),
             ],
         );
@@ -525,8 +530,15 @@ mod tests {
             indoc! {"
             mov [si], byte 12
             mov [si], word 12
+            mov [si], byte -12
+            mov [si], word -12
         "},
-            &[Inst::mov(Mem::SI, 12u8), Inst::mov(Mem::SI, 12u16)],
+            &[
+                Inst::mov(Mem::SI, 12i8),
+                Inst::mov(Mem::SI, 12i16),
+                Inst::mov(Mem::SI, -12i8),
+                Inst::mov(Mem::SI, -12i16),
+            ],
         );
     }
 
@@ -542,6 +554,14 @@ mod tests {
                 mov [di + 1], al
                 mov [bp + 9], bl
                 mov [bx + 5], bh
+                mov [bx + si - 8], ax
+                mov [bx + di - 12], bx
+                mov [bp + si - 4], cx
+                mov [bp + di - 7], dx
+                mov [si - 3], ah
+                mov [di - 1], al
+                mov [bp - 9], bl
+                mov [bx - 5], bh
             "},
             &[
                 Inst::mov(Mem::BX_SI_D(8), Reg::AX),
@@ -552,6 +572,14 @@ mod tests {
                 Inst::mov(Mem::DI_D(1), Reg::AL),
                 Inst::mov(Mem::BP_D(9), Reg::BL),
                 Inst::mov(Mem::BX_D(5), Reg::BH),
+                Inst::mov(Mem::BX_SI_D(-8), Reg::AX),
+                Inst::mov(Mem::BX_DI_D(-12), Reg::BX),
+                Inst::mov(Mem::BP_SI_D(-4), Reg::CX),
+                Inst::mov(Mem::BP_DI_D(-7), Reg::DX),
+                Inst::mov(Mem::SI_D(-3), Reg::AH),
+                Inst::mov(Mem::DI_D(-1), Reg::AL),
+                Inst::mov(Mem::BP_D(-9), Reg::BL),
+                Inst::mov(Mem::BX_D(-5), Reg::BH),
             ],
         );
     }
@@ -568,6 +596,14 @@ mod tests {
                 mov bp, [di + 6000]
                 mov si, [bp + 7000]
                 mov di, [bx + 8000]
+                mov ax, [bx + si - 1000]
+                mov bx, [bx + di - 2000]
+                mov cx, [bp + si - 3000]
+                mov dx, [bp + di - 4000]
+                mov sp, [si - 5000]
+                mov bp, [di - 6000]
+                mov si, [bp - 7000]
+                mov di, [bx - 8000]
             "},
             &[
                 Inst::mov(Reg::AX, Mem::BX_SI_D(1000)),
@@ -578,6 +614,14 @@ mod tests {
                 Inst::mov(Reg::BP, Mem::DI_D(6000)),
                 Inst::mov(Reg::SI, Mem::BP_D(7000)),
                 Inst::mov(Reg::DI, Mem::BX_D(8000)),
+                Inst::mov(Reg::AX, Mem::BX_SI_D(-1000)),
+                Inst::mov(Reg::BX, Mem::BX_DI_D(-2000)),
+                Inst::mov(Reg::CX, Mem::BP_SI_D(-3000)),
+                Inst::mov(Reg::DX, Mem::BP_DI_D(-4000)),
+                Inst::mov(Reg::SP, Mem::SI_D(-5000)),
+                Inst::mov(Reg::BP, Mem::DI_D(-6000)),
+                Inst::mov(Reg::SI, Mem::BP_D(-7000)),
+                Inst::mov(Reg::DI, Mem::BX_D(-8000)),
             ],
         );
     }
@@ -594,6 +638,14 @@ mod tests {
                 mov [di + 6000], bp
                 mov [bp + 7000], si
                 mov [bx + 8000], di
+                mov [bx + si - 1000], ax
+                mov [bx + di - 2000], bx
+                mov [bp + si - 3000], cx
+                mov [bp + di - 4000], dx
+                mov [si - 5000], sp
+                mov [di - 6000], bp
+                mov [bp - 7000], si
+                mov [bx - 8000], di
             "},
             &[
                 Inst::mov(Mem::BX_SI_D(1000), Reg::AX),
@@ -604,6 +656,14 @@ mod tests {
                 Inst::mov(Mem::DI_D(6000), Reg::BP),
                 Inst::mov(Mem::BP_D(7000), Reg::SI),
                 Inst::mov(Mem::BX_D(8000), Reg::DI),
+                Inst::mov(Mem::BX_SI_D(-1000), Reg::AX),
+                Inst::mov(Mem::BX_DI_D(-2000), Reg::BX),
+                Inst::mov(Mem::BP_SI_D(-3000), Reg::CX),
+                Inst::mov(Mem::BP_DI_D(-4000), Reg::DX),
+                Inst::mov(Mem::SI_D(-5000), Reg::SP),
+                Inst::mov(Mem::DI_D(-6000), Reg::BP),
+                Inst::mov(Mem::BP_D(-7000), Reg::SI),
+                Inst::mov(Mem::BX_D(-8000), Reg::DI),
             ],
         );
     }
@@ -697,13 +757,15 @@ mod tests {
 
     use super::*;
 
+    #[track_caller]
     fn assert_roundtrip(source: &str) {
         let assembled = assemble(source);
         let disassembled = Program::decode(assembled.clone()).unwrap().to_string();
         let reassembled = assemble(&disassembled);
-        assert_eq!(assembled, reassembled);
+        assert_bin_eq(assembled, reassembled);
     }
 
+    #[track_caller]
     fn assert_inst_eq(source: &str, instruction: Inst) {
         let assembled = assemble(source);
         let program = Program::decode(assembled.clone()).unwrap();
@@ -712,9 +774,10 @@ mod tests {
         assert_eq!(program.instructions[0], instruction);
 
         let reassembled = assemble(&program.to_string());
-        assert_eq!(assembled, reassembled);
+        assert_bin_eq(assembled, reassembled);
     }
 
+    #[track_caller]
     fn assert_insts_eq(source: &str, instructions: &[Inst]) {
         let assembled = assemble(source);
         let program = Program::decode(assembled.clone()).unwrap();
@@ -726,7 +789,14 @@ mod tests {
         }
 
         let reassembled = assemble(&program.to_string());
-        assert_eq!(assembled, reassembled);
+        assert_bin_eq(assembled, reassembled);
+    }
+
+    #[track_caller]
+    fn assert_bin_eq(a: Bytes, b: Bytes) {
+        if a != b {
+            pretty_assertions::assert_eq!(disassemble(a), disassemble(b));
+        }
     }
 
     fn assemble(source: &str) -> Bytes {
@@ -750,5 +820,22 @@ mod tests {
         let mut buf = Vec::new();
         out_file.read_to_end(&mut buf).unwrap();
         Bytes::from(buf)
+    }
+
+    fn disassemble(bin: Bytes) -> String {
+        let mut bin_file = tempfile::NamedTempFile::new().unwrap();
+        bin_file.write_all(&bin).unwrap();
+
+        let output = Command::new("ndisasm")
+            .stdin(Stdio::null())
+            .stderr(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .arg(bin_file.path())
+            .spawn()
+            .unwrap()
+            .wait_with_output()
+            .unwrap();
+
+        String::from_utf8(output.stdout).unwrap()
     }
 }
