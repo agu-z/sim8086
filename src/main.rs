@@ -207,7 +207,7 @@ impl Display for Inst {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Inst::Mov { dst, src } => {
-                writeln!(f, "mov {dst},{src}")
+                writeln!(f, "mov {dst}, {src}")
             }
         }
     }
