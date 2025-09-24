@@ -9,12 +9,10 @@ use std::{
 
 fn main() {
     let mut args = args();
-
     let Some(bin_path) = args.nth(1) else {
         println!("Usage: sim8086 <bin_path>");
         return;
     };
-
     let program = Program::load_path(&bin_path).unwrap();
     println!("{program}");
 }
@@ -57,40 +55,118 @@ impl Display for Program {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 enum Inst {
-    Mov { dst: Dst, src: Src },
+    Mov(Bop),
+    Add(Bop),
 }
 
 impl Inst {
     fn read(content: &mut Bytes) -> Result<Self> {
+        dbg!(
+            content
+                .iter()
+                .map(|b| format!("{b:b}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
         let op = content.try_get_u8()?;
 
-        // Register/memory to/from register
+        // MOV: Register/memory to/from register
         if op >> 2 == 0b100010 {
-            Self::read_mov_rm_r(op, content)
-        // Immediate to register/memory
+            Ok(Self::Mov(Bop::read_rm_r(op, content)?))
+        // MOV: Immediate to register/memory
         } else if op >> 1 == 0b1100011 {
-            Self::read_mov_rm_i(op, content)
-        // Immediate to register
+            Ok(Self::Mov(Bop::read_rm_i(op, content)?))
+        // MOV: Immediate to register
         } else if op >> 4 == 0b1011 {
             Self::read_mov_r_i(op, content)
-        // Memory to/from accumulator
+        // MOV: Memory to/from accumulator
         } else if op >> 2 == 0b101000 {
             Self::read_mov_m_acc(op, content)
+        // ADD: reg/mem with reg to either
+        } else if op >> 6 == 0b0 {
+            Ok(Self::Add(Bop::read_rm_r(op, content)?))
+        } else if op >> 2 == 0b100000 {
+            let s = (op >> 1) & 1;
+            let w = op & 1;
+
+            let mod_reg_rm = content.try_get_u8()?;
+            let dst = Dst::read_rm(w, mod_reg_rm, content)?;
+            let imm = Imm::read(w & !s, content)?;
+
+            match mod_reg_rm >> 3 & 0b111 {
+                0b000 => Ok(Self::Add(Bop(dst, Src::Imm(imm)))),
+                _ => todo!("{mod_reg_rm:b}"),
+            }
         } else {
             anyhow::bail!("TODO: {op:b}");
         }
     }
 
-    fn read_mov_rm_r(op_dw: u8, content: &mut Bytes) -> Result<Self> {
+    fn read_mov_r_i(op_w_reg: u8, content: &mut Bytes) -> Result<Self> {
+        let w = (op_w_reg >> 3) & 1;
+        let reg = op_w_reg & 0b111;
+        let imm = Imm::read(w, content)?;
+
+        Ok(Self::Mov(Bop(
+            Dst::Reg(Reg::from_w_reg(w, reg)?),
+            Src::Imm(imm),
+        )))
+    }
+
+    fn read_mov_m_acc(op_dw: u8, content: &mut Bytes) -> Result<Self> {
+        let d = (op_dw & 0b10) >> 1;
+        let w = op_dw & 1;
+
+        let acc = if w == 0 { Reg::AL } else { Reg::AX };
+        let mem = Mem::Addr(content.try_get_u16_le()?);
+
+        let (dst, src) = if d == 0 {
+            (Dst::Reg(acc), Src::Mem(mem))
+        } else {
+            (Dst::Mem(mem), Src::Reg(acc))
+        };
+
+        Ok(Self::Mov(Bop(dst, src)))
+    }
+
+    // DSL
+    pub fn mov(dst: impl Into<Dst>, src: impl Into<Src>) -> Self {
+        Self::Mov(Bop(dst.into(), src.into()))
+    }
+
+    pub fn add(dst: impl Into<Dst>, src: impl Into<Src>) -> Self {
+        Self::Add(Bop(dst.into(), src.into()))
+    }
+}
+
+impl Display for Inst {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Inst::Mov(Bop(dst, src)) => {
+                writeln!(f, "mov {dst}, {src}")
+            }
+            Inst::Add(Bop(dst, src)) => {
+                writeln!(f, "add {dst}, {src}")
+            }
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
+struct Bop(Dst, Src);
+
+impl Bop {
+    fn read_rm_r(op_dw: u8, content: &mut Bytes) -> Result<Self> {
         let d = (op_dw & 0b10) >> 1;
         let w = op_dw & 1;
 
         let mod_reg_rm = content.try_get_u8()?;
         let reg = (mod_reg_rm & 0b111000) >> 3;
         let reg = Reg::from_w_reg(w, reg)?;
-        let rm = Self::read_rm(w, mod_reg_rm, content)?;
+        let rm = Dst::read_rm(w, mod_reg_rm, content)?;
 
         let (dst, src) = if d == 0 {
             (rm, Src::Reg(reg))
@@ -98,28 +174,28 @@ impl Inst {
             (Dst::Reg(reg), rm.into())
         };
 
-        Ok(Self::Mov { dst, src })
+        Ok(Self(dst, src))
     }
 
-    fn read_mov_rm_i(op_w: u8, content: &mut Bytes) -> Result<Self> {
+    fn read_rm_i(op_w: u8, content: &mut Bytes) -> Result<Self> {
         let w = op_w & 1;
 
         let mod_reg_rm = content.try_get_u8()?;
-        let dst = Self::read_rm(w, mod_reg_rm, content)?;
+        let dst = Dst::read_rm(w, mod_reg_rm, content)?;
+        let imm = Imm::read(w, content)?;
 
-        let imm = if w == 0 {
-            Imm::Byte(content.try_get_i8()?)
-        } else {
-            Imm::Word(content.try_get_i16_le()?)
-        };
-
-        Ok(Self::Mov {
-            dst,
-            src: Src::Imm(imm),
-        })
+        Ok(Self(dst, Src::Imm(imm)))
     }
+}
 
-    fn read_rm(w: u8, mod_reg_rm: u8, content: &mut Bytes) -> Result<Dst> {
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Dst {
+    Reg(Reg),
+    Mem(Mem),
+}
+
+impl Dst {
+    fn read_rm(w: u8, mod_reg_rm: u8, content: &mut Bytes) -> Result<Self> {
         let mod_ = mod_reg_rm >> 6;
         let rm_bits = mod_reg_rm & 0b111;
 
@@ -162,61 +238,6 @@ impl Inst {
 
         Ok(rm)
     }
-
-    fn read_mov_r_i(op_w_reg: u8, content: &mut Bytes) -> Result<Self> {
-        let w = (op_w_reg >> 3) & 1;
-        let reg = op_w_reg & 0b111;
-        let imm = if w == 0 {
-            Imm::Byte(content.try_get_i8()?)
-        } else {
-            Imm::Word(content.try_get_i16_le()?)
-        };
-
-        Ok(Self::Mov {
-            dst: Dst::Reg(Reg::from_w_reg(w, reg)?),
-            src: Src::Imm(imm),
-        })
-    }
-
-    fn read_mov_m_acc(op_dw: u8, content: &mut Bytes) -> Result<Self> {
-        let d = (op_dw & 0b10) >> 1;
-        let w = op_dw & 1;
-
-        let acc = if w == 0 { Reg::AL } else { Reg::AX };
-        let mem = Mem::Addr(content.try_get_u16_le()?);
-
-        let (dst, src) = if d == 0 {
-            (Dst::Reg(acc), Src::Mem(mem))
-        } else {
-            (Dst::Mem(mem), Src::Reg(acc))
-        };
-
-        Ok(Self::Mov { dst, src })
-    }
-
-    // DSL
-    pub fn mov(dst: impl Into<Dst>, src: impl Into<Src>) -> Self {
-        Self::Mov {
-            dst: dst.into(),
-            src: src.into(),
-        }
-    }
-}
-
-impl Display for Inst {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Inst::Mov { dst, src } => {
-                writeln!(f, "mov {dst}, {src}")
-            }
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Clone, Copy)]
-enum Dst {
-    Reg(Reg),
-    Mem(Mem),
 }
 
 impl Display for Dst {
@@ -300,6 +321,17 @@ impl Display for Src {
 enum Imm {
     Byte(i8),
     Word(i16),
+}
+
+impl Imm {
+    pub fn read(w: u8, content: &mut Bytes) -> Result<Self> {
+        let imm = if w == 0 {
+            Self::Byte(content.try_get_i8()?)
+        } else {
+            Self::Word(content.try_get_i16_le()?)
+        };
+        Ok(imm)
+    }
 }
 
 impl Display for Imm {
@@ -664,6 +696,34 @@ mod tests {
                 Inst::mov(Mem::DI_D(-6000), Reg::BP),
                 Inst::mov(Mem::BP_D(-7000), Reg::SI),
                 Inst::mov(Mem::BX_D(-8000), Reg::DI),
+            ],
+        );
+    }
+
+    #[test]
+    fn test_add() {
+        assert_insts_eq(
+            indoc! {"
+                add cx, ax
+                add ax, cx
+                add ax, [75]
+                add ax, [bp+si+10]
+                add [bp+si+10], cx
+                add cx, 42
+                add cx, -42
+                add cx, 30000
+                add cx, -30000
+            "},
+            &[
+                Inst::add(Reg::CX, Reg::AX),
+                Inst::add(Reg::AX, Reg::CX),
+                Inst::add(Reg::AX, Mem::Addr(75)),
+                Inst::add(Reg::AX, Mem::BP_SI_D(10)),
+                Inst::add(Mem::BP_SI_D(10), Reg::CX),
+                Inst::add(Reg::CX, 42i8),
+                Inst::add(Reg::CX, -42i8),
+                Inst::add(Reg::CX, 30_000i16),
+                Inst::add(Reg::CX, -30_000i16),
             ],
         );
     }
