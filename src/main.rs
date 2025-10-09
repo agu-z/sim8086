@@ -63,14 +63,6 @@ enum Inst {
 
 impl Inst {
     fn read(content: &mut Bytes) -> Result<Self> {
-        dbg!(
-            content
-                .iter()
-                .map(|b| format!("{b:b}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-
         let op = content.try_get_u8()?;
 
         // MOV: Register/memory to/from register
