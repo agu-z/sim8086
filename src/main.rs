@@ -77,6 +77,12 @@ impl Inst {
         // MOV: Memory to/from accumulator
         } else if op >> 2 == 0b101000 {
             Self::read_mov_m_acc(op, content)
+        // ADD: imm to accumulator
+        } else if op >> 1 == 0b10 {
+            let w = op & 1;
+            let dst = Dst::Reg(if w == 1 { Reg::AX } else { Reg::AL });
+            let src = Src::Imm(Imm::read(w, content)?);
+            Ok(Self::Add(Bop(dst, src)))
         // ADD: reg/mem with reg to either
         } else if op >> 6 == 0b0 {
             Ok(Self::Add(Bop::read_rm_r(op, content)?))
@@ -89,6 +95,7 @@ impl Inst {
             let imm = Imm::read(w & !s, content)?;
 
             match mod_reg_rm >> 3 & 0b111 {
+                // ADD: immediate to register/memory
                 0b000 => Ok(Self::Add(Bop(dst, Src::Imm(imm)))),
                 _ => todo!("{mod_reg_rm:b}"),
             }
@@ -705,6 +712,8 @@ mod tests {
                 add cx, -42
                 add cx, 30000
                 add cx, -30000
+                add ax, 30000
+                add al, 127
             "},
             &[
                 Inst::add(Reg::CX, Reg::AX),
@@ -716,6 +725,8 @@ mod tests {
                 Inst::add(Reg::CX, -42i8),
                 Inst::add(Reg::CX, 30_000i16),
                 Inst::add(Reg::CX, -30_000i16),
+                Inst::add(Reg::AX, 30_000i16),
+                Inst::add(Reg::AL, 127i8),
             ],
         );
     }
